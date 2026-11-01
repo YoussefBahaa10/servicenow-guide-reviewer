@@ -207,6 +207,15 @@ def _grounded(issue, paras):
     return False
 
 
+def _swaps_terms(issue, known):
+    """True if the correction removes a verified ServiceNow term and introduces a different one."""
+    def terms(text):
+        low = text.lower()
+        return {t.lower() for t in known if len(t) > 3 and re.search(r"(?<!\w)" + re.escape(t.lower()) + r"(?!\w)", low)}
+    before, after = terms(issue["original_text"]), terms(issue["suggested_correction"])
+    return bool(before - after) and bool(after - before)
+
+
 def _verify(found, paras, rule_issues, engine):
     """Shared safeguards applied to every AI finding."""
     known = Terminology().terms
@@ -232,6 +241,9 @@ def _verify(found, paras, rule_issues, engine):
         issue["source"] = source
         if issue["issue_type"] == "Terminology" and issue["status"] == "Confirmed" and not source:
             issue["status"] = "Needs Manual Review"  # unverified ServiceNow claims are never "confirmed"
+        if _swaps_terms(issue, known):
+            issue["status"] = "Needs Manual Review"  # e.g. "Service Catalog" -> "Service Portal" changes the meaning
+            issue["explanation"] += " (Replaces one ServiceNow term with another; verify this is intended.)"
         if not _duplicate(issue, rule_issues + out):
             issue["engine"] = engine
             out.append(issue)

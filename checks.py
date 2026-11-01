@@ -324,7 +324,8 @@ def check_common(paras):
         for m in re.finditer(r"(?<![\w])(\w{2,})\s+\1(?![\w])", text, re.I):
             if m.group(1).isdigit():
                 continue
-            out.append(issue(loc, "Grammar", snippet(text, m.start(), m.end(), 15), m.group(1),
+            out.append(issue(loc, "Grammar", snippet(text, m.start(), m.end(), 15),
+                             f'Remove the repeated "{m.group(1)}", or replace it if a different word was intended.',
                              "Repeated word.", "Medium", "Confirmed"))
         if re.search(r"\S {2,}\S", text):
             m = re.search(r"\S {2,}\S", text)
