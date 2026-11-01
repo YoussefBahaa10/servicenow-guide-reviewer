@@ -2,10 +2,11 @@
 
 A Streamlit web app that reviews ServiceNow user guides (PDF or DOCX, in English, Arabic, or both) and reports spelling, grammar, formatting, terminology, and clarity issues.
 
-It has two review engines:
+It has three review engines:
 
-- **Built-in checks (always on).** Free rule-based checks that run on the server with no API keys or paid services.
-- **ChatGPT review (optional, local only).** When you run the app on your own computer, click **Continue with ChatGPT** to add context-aware analysis using your ChatGPT plan. See [ChatGPT review](#chatgpt-review-optional-runs-on-your-computer).
+- **Built-in checks (always on).** Free rule-based checks that run on the server.
+- **Free AI review (optional, works online).** An open-source model (Qwen 3.8 27B or GPT-OSS 120B) on Groq's free tier. See [Free AI review](#free-ai-review-open-source-works-online).
+- **ChatGPT review (optional, local only).** Uses your ChatGPT plan when the app runs on your computer. See [ChatGPT review](#chatgpt-review-optional-runs-on-your-computer).
 
 Uploaded files are processed in memory, never saved to disk, and never modified.
 
@@ -17,7 +18,7 @@ Uploaded files are processed in memory, never saved to disk, and never modified.
 | `reviewer.py` | Extracts text and formatting from PDF/DOCX, runs the review, exports the report |
 | `checks.py` | The rule-based review engine |
 | `chatgpt_auth.py` | Official Sign in with ChatGPT flow (sign-in, token validation, refresh, sign-out) |
-| `ai_review.py` | ChatGPT review through the Responses API, merged with the built-in findings |
+| `ai_review.py` | AI review (free open-source model or ChatGPT), safeguards, merging with built-in findings |
 | `servicenow_terminology.json` | Verified ServiceNow terminology with official sources |
 | `custom_words.txt` | General technical words the English dictionary is missing (checkbox, dropdown…) |
 | `requirements.txt` | Dependencies |
@@ -119,4 +120,41 @@ Use **Manage usage** to see or limit this app's usage in ChatGPT settings (https
 - **"permission to use your ChatGPT plan was not granted"**: click **Continue with ChatGPT** again and allow plan usage.
 - **"not available for this account or workspace"**: your plan or workspace isn't eligible for this preview.
 - **Lost or leaked credentials**: disconnect the app in ChatGPT Settings, then sign in again.
+
+## Free AI review (open-source, works online)
+
+The app can use a free, open-source model hosted on **Groq's free plan**. Open-source means the model's weights are public; Groq runs it for free so the Streamlit server doesn't need a GPU. Two models are offered:
+- **Qwen 3.8 27B** (default): strong in Arabic and English.
+- **OpenAI's open-weight GPT-OSS 120B.**
+
+### Set it up (once, about 3 minutes)
+
+1. Create a free account at https://console.groq.com. No credit card is needed for the free plan.
+2. Open **API Keys → Create API Key**, name it `servicenow-reviewer`, and copy it. It's shown only once.
+3. In Streamlit Community Cloud, open your app → **⋮ → Settings → Secrets**, paste the line below, and click **Save**:
+   ```toml
+   GROQ_API_KEY = "paste-your-key-here"
+   ```
+4. The app restarts and shows the **Free AI review** panel.
+
+To use it when running locally, create `.streamlit/secrets.toml` with the same line. `.gitignore` keeps that file out of GitHub. Never put the key in the code.
+
+### Free plan limits
+
+Groq's free plan allows about **8,000 tokens per minute and 200,000 per day** for these models, so:
+- Long guides are sent in parts, and the app waits automatically between parts. A 20-page guide takes a few minutes.
+- Roughly **10–15 guides per day** fit in the free allowance, shared by everyone using your app. When it runs out, the app says so and still shows the built-in results.
+- Document text is sent to Groq for review, and only after the user ticks the authorization box. See Groq's data policy at https://console.groq.com/docs/your-data.
+
+### How mistakes are kept out
+
+No AI is error-free. The app applies these safeguards to every AI finding (free AI and ChatGPT):
+
+1. **The quote must exist.** If the AI quotes text that isn't in the document, the finding is discarded. If the quote exists but at a different location, the location is corrected.
+2. **Verified terms are protected.** A spelling finding on a term from `servicenow_terminology.json` or `custom_words.txt` is discarded.
+3. **Official sources only.** Source links that aren't on servicenow.com are removed, and a terminology finding without an official source is downgraded to **Needs Manual Review**.
+4. **No duplicates or empty findings.** Findings already reported by the built-in checks are removed, as are "corrections" that change nothing and malformed findings.
+5. **Labelled.** Each AI finding is marked **Found by: AI (model name)** so you can tell it apart from rule results.
+
+Review AI suggestions before applying them, especially **Needs Manual Review** items.
 

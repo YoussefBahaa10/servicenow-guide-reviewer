@@ -5,12 +5,14 @@ messages, and none of the unsupported fields (temperature, max_output_tokens, me
 """
 
 import json
+import os
 import re
+import time
 
 import openai
 
 import chatgpt_auth
-from checks import HERE, Terminology
+from checks import HERE, Terminology, custom_words
 
 MAX_CHARS_PER_REQUEST = 50_000
 ISSUE_TYPES = ["Spelling", "Grammar", "Formatting", "Terminology", "Clarity"]
@@ -99,12 +101,12 @@ def _format_paragraph(p):
     return f"[{p['location']} | {' '.join(meta)}] {p['text']}"
 
 
-def _chunks(paras):
+def _chunks(paras, max_chars=MAX_CHARS_PER_REQUEST):
     chunks, current = [], []
     size = 0
     for p in paras:
         line = _format_paragraph(p) if p["kind"] != "empty" else f"[{p['location']} | empty paragraph]"
-        if size + len(line) > MAX_CHARS_PER_REQUEST and current:
+        if size + len(line) > max_chars and current:
             chunks.append("\n".join(current))
             current, size = [], 0
         current.append(line)
@@ -189,11 +191,57 @@ def _duplicate(ai, rule_issues):
     return False
 
 
+def _grounded(issue, paras):
+    """Keep only findings whose quoted text really exists in the document; fix the location if needed."""
+    quote = _norm(issue.get("original_text", ""))
+    if not quote:
+        return False
+    texts = [(p["location"], _norm(p["text"])) for p in paras if p["kind"] != "empty"]
+    for loc, text in texts:
+        if loc == issue["location"] and quote in text:
+            return True
+    for loc, text in texts:
+        if quote in text:
+            issue["location"] = loc
+            return True
+    return False
+
+
+def _verify(found, paras, rule_issues, engine):
+    """Shared safeguards applied to every AI finding."""
+    known = Terminology().terms
+    allowed_words = custom_words() | {t.lower() for t in known}
+    out = []
+    for issue in found:
+        if not isinstance(issue, dict) or not all(isinstance(issue.get(k), str) for k in SCHEMA["properties"]["issues"]["items"]["required"]):
+            continue
+        if issue["issue_type"] not in ISSUE_TYPES or issue["severity"] not in ("High", "Medium", "Low") \
+                or issue["status"] not in ("Confirmed", "Suggestion", "Needs Manual Review"):
+            continue
+        if not _grounded(issue, paras):
+            continue  # the quoted text is not in the document: discard
+        if issue["issue_type"] == "Spelling" and issue["original_text"].strip().lower() in allowed_words:
+            continue  # never flag a verified ServiceNow term or allowed word as misspelled
+        if _norm(issue["original_text"]) == _norm(issue["suggested_correction"]) and issue["status"] != "Needs Manual Review":
+            continue  # "correction" changes nothing
+        source = issue.get("source", "").strip()
+        if source and not OFFICIAL_SOURCE.match(source):
+            source = ""  # only official ServiceNow sources are allowed
+        if not source and issue["suggested_correction"] in known:
+            source = known[issue["suggested_correction"]]  # correction matches the verified reference
+        issue["source"] = source
+        if issue["issue_type"] == "Terminology" and issue["status"] == "Confirmed" and not source:
+            issue["status"] = "Needs Manual Review"  # unverified ServiceNow claims are never "confirmed"
+        if not _duplicate(issue, rule_issues + out):
+            issue["engine"] = engine
+            out.append(issue)
+    return out
+
+
 def review(paras, rule_issues, model, progress=None):
     """Return ChatGPT findings that the rule-based checks did not already report."""
     client = openai.OpenAI(api_key=chatgpt_auth.access_token(), base_url=chatgpt_auth.RESOURCE, max_retries=0)
     terminology = (HERE / "servicenow_terminology.json").read_text(encoding="utf-8")
-    known = Terminology().terms
     already = "\n".join(f"- {r['location']}: {r['original_text']} ({r['issue_type']})" for r in rule_issues[:300])
     chunks = _chunks(paras)
     found = []
@@ -204,18 +252,82 @@ def review(paras, rule_issues, model, progress=None):
                      f"<already_reported>\n{already or '(none)'}\n</already_reported>\n\n"
                      f"Document part {n} of {len(chunks)}:\n<document>\n{chunk}\n</document>")
         found += _request(client, model, user_text).get("issues", [])
+    return _verify(found, paras, rule_issues, "ChatGPT")
 
-    out = []
-    for issue in found:
-        source = issue.get("source", "").strip()
-        if source and not OFFICIAL_SOURCE.match(source):
-            source = ""  # only official ServiceNow sources are allowed
-        if not source and issue["suggested_correction"] in known:
-            source = known[issue["suggested_correction"]]  # correction matches the verified reference
-        issue["source"] = source
-        if issue["issue_type"] == "Terminology" and issue["status"] == "Confirmed" and not source:
-            issue["status"] = "Needs Manual Review"  # unverified ServiceNow claims are never "confirmed"
-        if not _duplicate(issue, rule_issues + out):
-            issue["engine"] = "ChatGPT"
-            out.append(issue)
-    return out
+
+# ---------------------------------------------------------------- free open-source model (Groq)
+
+GROQ_URL = "https://api.groq.com/openai/v1"
+FREE_MODELS = {"qwen/qwen3.8-27b": "Qwen 3.8 27B (best for Arabic)", "openai/gpt-oss-120b": "GPT-OSS 120B"}
+FREE_CHARS_PER_REQUEST = 9_000  # the free plan allows 8,000 tokens per minute (input + output)
+FREE_JSON_HINT = """
+
+Return ONLY a JSON object of this form (no other text):
+{"issues": [{"location": "...", "issue_type": "Spelling|Grammar|Formatting|Terminology|Clarity",
+ "original_text": "...", "suggested_correction": "...", "explanation": "...",
+ "severity": "High|Medium|Low", "status": "Confirmed|Suggestion|Needs Manual Review", "source": ""}]}"""
+
+
+def free_api_key():
+    """Read the Groq key from Streamlit secrets or the environment. Never displayed or logged."""
+    try:
+        import streamlit as st
+        if "GROQ_API_KEY" in st.secrets:
+            return st.secrets["GROQ_API_KEY"]
+    except Exception:  # no secrets file
+        pass
+    return os.environ.get("GROQ_API_KEY", "")
+
+
+def _compact_terminology():
+    t = Terminology()
+    return "\n".join(f"- {term}" for term in sorted(t.terms))
+
+
+def _free_request(client, model, user_text, wait):
+    for attempt in range(4):
+        try:
+            resp = client.chat.completions.create(
+                model=model, temperature=0.1, response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": INSTRUCTIONS + FREE_JSON_HINT},
+                          {"role": "user", "content": user_text}])
+            return json.loads(resp.choices[0].message.content or "{}")
+        except openai.RateLimitError as e:
+            body = str(getattr(e, "body", "") or e)
+            if "per day" in body or "TPD" in body or "RPD" in body:
+                raise AIReviewError("The free AI's daily limit has been reached. Try again tomorrow; the built-in "
+                                    "check results are shown below.", usage_limit=True) from None
+            delay = float(e.response.headers.get("retry-after", 20)) if e.response is not None else 20
+            wait(min(max(delay, 5), 65))
+        except json.JSONDecodeError:
+            if attempt == 3:
+                raise AIReviewError("The free AI returned an unreadable answer. Please try again.") from None
+        except openai.AuthenticationError:
+            raise AIReviewError("The free AI key is missing or invalid. Check GROQ_API_KEY in the app's secrets.") from None
+        except openai.APIConnectionError:
+            raise AIReviewError("Could not reach the free AI service. Please try again.") from None
+        except openai.APIStatusError as e:
+            raise AIReviewError(f"The free AI service returned an error (HTTP {e.status_code}).") from None
+    raise AIReviewError("The free AI service is busy. Please try again in a minute.")
+
+
+def review_free(paras, rule_issues, model, progress=None, wait=time.sleep):
+    """Review with a free open-source model hosted on Groq's free tier."""
+    key = free_api_key()
+    if not key:
+        raise AIReviewError("No GROQ_API_KEY is configured.")
+    client = openai.OpenAI(api_key=key, base_url=GROQ_URL, max_retries=0, timeout=120)
+    terms = _compact_terminology()
+    chunks = _chunks(paras, FREE_CHARS_PER_REQUEST)
+    found = []
+    for n, chunk in enumerate(chunks, start=1):
+        if progress:
+            progress(n, len(chunks))
+        locs = set(re.findall(r"^\[([^|\]]+?) \|", chunk, re.M))
+        already = "\n".join(f"- {r['location']}: {r['original_text'][:80]}" for r in rule_issues
+                             if any(r["location"].startswith(l) or l in r["location"] for l in locs))[:2500]
+        user_text = (f"<verified_servicenow_terms>\n{terms}\n</verified_servicenow_terms>\n\n"
+                     f"<already_reported>\n{already or '(none)'}\n</already_reported>\n\n"
+                     f"Document part {n} of {len(chunks)}:\n<document>\n{chunk}\n</document>")
+        found += _free_request(client, model, user_text, wait).get("issues", [])
+    return _verify(found, paras, rule_issues, "AI (" + FREE_MODELS.get(model, model).split(" (")[0] + ")")

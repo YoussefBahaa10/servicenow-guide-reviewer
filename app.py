@@ -1,4 +1,5 @@
 import html
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -65,7 +66,20 @@ def wait_for_sign_in():
     st.rerun()
 
 
-ai_model = None
+ai_engine = None  # ("chatgpt" | "free", model)
+if ai_review.free_api_key():
+    with st.container(border=True):
+        st.markdown("**Free AI review (optional)**: an open-source model adds context-aware analysis on top of the "
+                    "built-in checks. It's free, but limited to roughly 10–15 guides per day, and long guides take "
+                    "a few minutes.")
+        free_model = st.selectbox("Model", list(ai_review.FREE_MODELS), format_func=ai_review.FREE_MODELS.get,
+                                  key="free_model")
+        if st.checkbox("I authorize sending this document's text to Groq (the free AI service) for review.",
+                       key="free_consent"):
+            ai_engine = ("free", free_model)
+        st.caption("AI findings are checked automatically: quotes that don't exist in the document are discarded, and "
+                   "unverified ServiceNow claims are marked *Needs Manual Review*. Always review the results.")
+
 if running_locally():
     with st.container(border=True):
         st.markdown("**ChatGPT review (optional)**: adds context-aware analysis on top of the built-in checks.")
@@ -98,7 +112,7 @@ if running_locally():
                 labels = {slug: name for slug, name in models}
                 chosen = st.selectbox("Model", list(labels), format_func=labels.get)
                 if st.checkbox("I authorize sending this document's text to OpenAI for review using my ChatGPT plan."):
-                    ai_model = chosen
+                    ai_engine = ("chatgpt", chosen)  # takes priority over the free AI if both are ticked
         else:
             if account.get("client_id") and account.get("email"):
                 st.caption(f"Previously connected: {account['email']}")
@@ -106,9 +120,9 @@ if running_locally():
             if st.button("Continue with ChatGPT"):
                 st.session_state.auth_url = chatgpt_auth.start_sign_in()
                 st.rerun()
-else:
-    st.info("ChatGPT review is available only when you run this app on your own computer: OpenAI currently supports "
-            "Sign in with ChatGPT plan usage for locally hosted apps. This online version uses the built-in checks.")
+elif not ai_review.free_api_key():
+    st.info("This online version uses the built-in checks. AI review is available when the app runs on your own "
+            "computer (ChatGPT) or when a free AI key is configured.")
 
 uploaded = st.file_uploader("Upload a PDF or DOCX file", type=["pdf", "docx"])
 
@@ -116,10 +130,22 @@ if uploaded and st.button("Review Document", type="primary"):
     ai_errors = []
 
     def ai(paras, rule_issues):
-        bar = st.progress(0.0, text="ChatGPT is reviewing the document...")
+        engine, model = ai_engine
+        name = "ChatGPT" if engine == "chatgpt" else "The free AI"
+        bar = st.progress(0.0, text=f"{name} is reviewing the document...")
+        bar_value = [0.0]
+
+        def step(n, total):
+            bar_value[0] = (n - 1) / total
+            bar.progress(bar_value[0], text=f"{name}: part {n} of {total}...")
+
+        def wait(seconds):  # free tier: pause until the per-minute limit resets
+            bar.progress(bar_value[0], text=f"Waiting {seconds:.0f}s for the free AI's per-minute limit...")
+            time.sleep(seconds)
         try:
-            return ai_review.review(paras, rule_issues, ai_model,
-                                    lambda n, total: bar.progress((n - 1) / total, text=f"ChatGPT: part {n} of {total}..."))
+            if engine == "chatgpt":
+                return ai_review.review(paras, rule_issues, model, step)
+            return ai_review.review_free(paras, rule_issues, model, step, wait)
         except (ai_review.AIReviewError, chatgpt_auth.AuthError) as e:
             ai_errors.append(e)
             return []
@@ -129,14 +155,14 @@ if uploaded and st.button("Review Document", type="primary"):
     with st.spinner("Reviewing document..."):
         try:
             st.session_state.result = reviewer.review_document(uploaded.name, uploaded.getvalue(),
-                                                               ai if ai_model else None)
+                                                               ai if ai_engine else None)
             st.session_state.filename = uploaded.name
-            st.session_state.result["ai_used"] = bool(ai_model) and not ai_errors
+            st.session_state.result["ai_used"] = bool(ai_engine) and not ai_errors
         except Exception as e:  # show a readable error instead of a stack trace
             st.error(f"Review failed: {e}")
     for e in ai_errors:
-        st.error(f"ChatGPT review was skipped: {e} Showing built-in check results only.")
-        if getattr(e, "usage_limit", False):
+        st.error(f"AI review was skipped: {e} Showing built-in check results only.")
+        if getattr(e, "usage_limit", False) and ai_engine[0] == "chatgpt":
             st.markdown("**Usage limit reached.** Review your plan or this app's limit in ChatGPT settings: "
                         f"[Manage usage]({chatgpt_auth.USAGE_URL})")
 
@@ -153,7 +179,7 @@ if result:
     st.write(
         " · ".join(f"**{s}:** {sum(1 for i in issues if i['status'] == s)}"
                    for s in reviewer.STATUSES)
-        + (f" · **Found by ChatGPT:** {sum(1 for i in issues if i.get('engine') == 'ChatGPT')}"
+        + (f" · **Found by AI:** {sum(1 for i in issues if i.get('engine', 'Rules') != 'Rules')}"
            if result.get("ai_used") else "")
     )
 
