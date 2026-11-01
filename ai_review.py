@@ -271,7 +271,10 @@ def review(paras, rule_issues, model, progress=None):
 
 GROQ_URL = "https://api.groq.com/openai/v1"
 FREE_MODELS = {"qwen/qwen3.8-27b": "Qwen 3.8 27B (best for Arabic)", "openai/gpt-oss-120b": "GPT-OSS 120B"}
-FREE_CHARS_PER_REQUEST = 9_000  # the free plan allows 8,000 tokens per minute (input + output)
+FREE_CHARS_PER_REQUEST = 4_500  # the free plan allows 8,000 tokens per minute (input + output)
+FREE_TOKENS_PER_MINUTE = 7_500  # stay just under the free plan's 8,000
+FREE_MAX_OUTPUT = 1_500
+FREE_MAX_PARTS = 15  # about 65,000 characters; protects the shared daily allowance (200,000 tokens)
 FREE_JSON_HINT = """
 
 Return ONLY a JSON object of this form (no other text):
@@ -296,50 +299,116 @@ def _compact_terminology():
     return "\n".join(f"- {term}" for term in sorted(t.terms))
 
 
-def _free_request(client, model, user_text, wait):
-    for attempt in range(4):
+class _TooLarge(Exception):
+    pass
+
+
+class _Pacer:
+    """Keeps requests under the free plan's tokens-per-minute limit."""
+
+    def __init__(self, wait):
+        self.wait, self.log = wait, []  # (time, tokens)
+
+    def before(self, estimate):
+        now = time.time()
+        self.log = [(t, n) for t, n in self.log if now - t < 60]
+        used = sum(n for _, n in self.log)
+        if self.log and used + estimate > FREE_TOKENS_PER_MINUTE:
+            self.wait(max(1, 61 - (now - self.log[0][0])))
+            self.log = []
+
+    def after(self, tokens):
+        self.log.append((time.time(), tokens))
+
+
+def _estimate_tokens(text):
+    arabic = len(re.findall(r"[\u0600-\u06FF]", text))
+    return int((len(text) - arabic) / 3.5 + arabic / 2) + FREE_MAX_OUTPUT
+
+
+def _free_request(client, model, system, user_text, pacer):
+    estimate = _estimate_tokens(system + user_text)
+    for attempt in range(8):
+        pacer.before(estimate)
         try:
             resp = client.chat.completions.create(
-                model=model, temperature=0.1, response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": INSTRUCTIONS + FREE_JSON_HINT},
-                          {"role": "user", "content": user_text}])
+                model=model, temperature=0.1, max_completion_tokens=FREE_MAX_OUTPUT,
+                response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user_text}])
+            pacer.after(getattr(getattr(resp, "usage", None), "total_tokens", None) or estimate)
             return json.loads(resp.choices[0].message.content or "{}")
-        except openai.RateLimitError as e:
+        except (openai.RateLimitError, openai.APIStatusError) as e:
             body = str(getattr(e, "body", "") or e)
-            if "per day" in body or "TPD" in body or "RPD" in body:
-                raise AIReviewError("The free AI's daily limit has been reached. Try again tomorrow; the built-in "
-                                    "check results are shown below.", usage_limit=True) from None
-            delay = float(e.response.headers.get("retry-after", 20)) if e.response is not None else 20
-            wait(min(max(delay, 5), 65))
+            status = getattr(e, "status_code", 0)
+            if status == 413 or "too large" in body.lower() or "reduce your message" in body.lower():
+                raise _TooLarge() from None
+            if isinstance(e, openai.RateLimitError):
+                if "per day" in body or "TPD" in body or "RPD" in body:
+                    raise AIReviewError("The free AI's daily limit has been reached. Try again tomorrow; the "
+                                        "built-in check results are shown below.", usage_limit=True) from None
+                delay = float(e.response.headers.get("retry-after", 20)) if e.response is not None else 20
+                pacer.wait(min(max(delay, 5), 65))
+                pacer.log = []
+                continue
+            if status == 401:
+                raise AIReviewError("The free AI key is missing or invalid. Check GROQ_API_KEY in the app's secrets.") from None
+            if status >= 500 and attempt < 3:
+                pacer.wait(10)
+                continue
+            if status == 400 and "json" in body.lower() and attempt < 2:
+                continue  # the model produced invalid JSON; ask again
+            raise AIReviewError(f"The free AI service returned an error (HTTP {status}).") from None
         except json.JSONDecodeError:
-            if attempt == 3:
+            if attempt >= 2:
                 raise AIReviewError("The free AI returned an unreadable answer. Please try again.") from None
-        except openai.AuthenticationError:
-            raise AIReviewError("The free AI key is missing or invalid. Check GROQ_API_KEY in the app's secrets.") from None
         except openai.APIConnectionError:
-            raise AIReviewError("Could not reach the free AI service. Please try again.") from None
-        except openai.APIStatusError as e:
-            raise AIReviewError(f"The free AI service returned an error (HTTP {e.status_code}).") from None
-    raise AIReviewError("The free AI service is busy. Please try again in a minute.")
+            if attempt >= 2:
+                raise AIReviewError("Could not reach the free AI service. Please try again.") from None
+            pacer.wait(5)
+    raise AIReviewError("The free AI service is busy. Please try again in a few minutes.")
 
 
 def review_free(paras, rule_issues, model, progress=None, wait=time.sleep):
-    """Review with a free open-source model hosted on Groq's free tier."""
+    """Review with a free open-source model hosted on Groq's free tier.
+
+    Returns (issues, note); note explains if only part of a long document was reviewed by the AI."""
     key = free_api_key()
     if not key:
         raise AIReviewError("No GROQ_API_KEY is configured.")
     client = openai.OpenAI(api_key=key, base_url=GROQ_URL, max_retries=0, timeout=120)
+    system = INSTRUCTIONS + FREE_JSON_HINT
     terms = _compact_terminology()
-    chunks = _chunks(paras, FREE_CHARS_PER_REQUEST)
-    found = []
-    for n, chunk in enumerate(chunks, start=1):
+    pacer = _Pacer(wait)
+    queue = _chunks(paras, FREE_CHARS_PER_REQUEST)
+    total = len(queue)
+    note = ""
+    if total > FREE_MAX_PARTS:
+        note = (f"The document is long, so the free AI reviewed the first {FREE_MAX_PARTS} of {total} parts "
+                f"(about {FREE_MAX_PARTS * FREE_CHARS_PER_REQUEST // 1000}k characters) to stay within the free "
+                "daily allowance. The built-in checks covered the whole document.")
+        queue = queue[:FREE_MAX_PARTS]
+        total = len(queue)
+    found, done = [], 0
+    while queue:
+        chunk = queue.pop(0)
+        done += 1
         if progress:
-            progress(n, len(chunks))
+            progress(min(done, total), total)
         locs = set(re.findall(r"^\[([^|\]]+?) \|", chunk, re.M))
         already = "\n".join(f"- {r['location']}: {r['original_text'][:80]}" for r in rule_issues
-                             if any(r["location"].startswith(l) or l in r["location"] for l in locs))[:2500]
+                             if any(r["location"].startswith(l) or l in r["location"] for l in locs))[:1500]
         user_text = (f"<verified_servicenow_terms>\n{terms}\n</verified_servicenow_terms>\n\n"
                      f"<already_reported>\n{already or '(none)'}\n</already_reported>\n\n"
-                     f"Document part {n} of {len(chunks)}:\n<document>\n{chunk}\n</document>")
-        found += _free_request(client, model, user_text, wait).get("issues", [])
-    return _verify(found, paras, rule_issues, "AI (" + FREE_MODELS.get(model, model).split(" (")[0] + ")")
+                     f"<document>\n{chunk}\n</document>")
+        try:
+            found += _free_request(client, model, system, user_text, pacer).get("issues", [])
+        except _TooLarge:
+            lines = chunk.split("\n")
+            if len(lines) < 2:
+                continue  # a single huge paragraph: skip it rather than fail the review
+            half = len(lines) // 2
+            queue[:0] = ["\n".join(lines[:half]), "\n".join(lines[half:])]
+            total += 1
+            done -= 1
+    model_name = FREE_MODELS.get(model, model).split(" (")[0]
+    return _verify(found, paras, rule_issues, f"AI ({model_name})"), note

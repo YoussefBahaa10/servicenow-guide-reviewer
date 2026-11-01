@@ -127,7 +127,7 @@ elif not ai_review.free_api_key():
 uploaded = st.file_uploader("Upload a PDF or DOCX file", type=["pdf", "docx"])
 
 if uploaded and st.button("Review Document", type="primary"):
-    ai_errors = []
+    ai_errors, ai_notes = [], []
 
     def ai(paras, rule_issues):
         engine, model = ai_engine
@@ -145,7 +145,10 @@ if uploaded and st.button("Review Document", type="primary"):
         try:
             if engine == "chatgpt":
                 return ai_review.review(paras, rule_issues, model, step)
-            return ai_review.review_free(paras, rule_issues, model, step, wait)
+            found, note = ai_review.review_free(paras, rule_issues, model, step, wait)
+            if note:
+                ai_notes.append(note)
+            return found
         except (ai_review.AIReviewError, chatgpt_auth.AuthError) as e:
             ai_errors.append(e)
             return []
@@ -160,6 +163,8 @@ if uploaded and st.button("Review Document", type="primary"):
             st.session_state.result["ai_used"] = bool(ai_engine) and not ai_errors
         except Exception as e:  # show a readable error instead of a stack trace
             st.error(f"Review failed: {e}")
+    if "result" in st.session_state:
+        st.session_state.result["limitations"] = st.session_state.result["limitations"] + ai_notes
     for e in ai_errors:
         st.error(f"AI review was skipped: {e} Showing built-in check results only.")
         if getattr(e, "usage_limit", False) and ai_engine[0] == "chatgpt":
