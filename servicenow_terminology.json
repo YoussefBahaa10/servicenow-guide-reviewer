@@ -1,0 +1,189 @@
+{
+  "_about": "Verified ServiceNow terminology reference used by the reviewer agent. Every entry must cite an official ServiceNow source (servicenow.com or servicenow.com/docs). Add new terms only after verifying them in official documentation. Terms with enforce_case=true are official product names or acronyms whose exact capitalization is checked.",
+  "official_sources": {
+    "servicenow_website": "https://www.servicenow.com/",
+    "product_documentation": "https://www.servicenow.com/docs/",
+    "ai_platform_glossary": "https://www.servicenow.com/docs/ (search: AI Platform glossary)",
+    "itsm_documentation": "https://www.servicenow.com/docs/ (product: IT Service Management)",
+    "service_catalog_documentation": "https://www.servicenow.com/docs/ (product: Service Catalog)"
+  },
+  "core_terms": [
+    {
+      "term": "ServiceNow",
+      "description": "Enterprise platform for managing and automating workflows.",
+      "notes": "One word, capital S and capital N. Not 'Service Now' or 'Servicenow'.",
+      "source": "https://www.servicenow.com/",
+      "enforce_case": true
+    },
+    {
+      "term": "ITSM",
+      "description": "IT Service Management.",
+      "source": "https://www.servicenow.com/docs/ (IT Service Management)",
+      "enforce_case": true
+    },
+    {
+      "term": "Incident",
+      "description": "A record associated with an interruption or disruption requiring service restoration.",
+      "source": "https://www.servicenow.com/docs/ (IT Service Management > Incident Management)"
+    },
+    {
+      "term": "Problem",
+      "description": "An underlying issue investigated to identify causes and prevent recurring incidents.",
+      "source": "https://www.servicenow.com/docs/ (IT Service Management > Problem Management)"
+    },
+    {
+      "term": "Change Request",
+      "description": "A record used to manage a proposed change.",
+      "source": "https://www.servicenow.com/docs/ (IT Service Management > Change Management)"
+    },
+    {
+      "term": "Service Request",
+      "description": "A request for an established service, item, or access.",
+      "source": "https://www.servicenow.com/docs/ (IT Service Management > Request Management)"
+    },
+    {
+      "term": "Service Catalog",
+      "description": "A collection of services and items available for users to request.",
+      "source": "https://www.servicenow.com/docs/ (Service Catalog)",
+      "enforce_case": true
+    },
+    {
+      "term": "Catalog Item",
+      "description": "A good or service that users can request through the catalog.",
+      "source": "https://www.servicenow.com/docs/ (Service Catalog)"
+    },
+    {
+      "term": "Request",
+      "description": "A record associated with a submitted service order.",
+      "aliases": [
+        "REQ"
+      ],
+      "source": "https://www.servicenow.com/docs/ (Service Catalog)"
+    },
+    {
+      "term": "Requested Item",
+      "description": "An individual item requested through the Service Catalog.",
+      "aliases": [
+        "RITM"
+      ],
+      "source": "https://www.servicenow.com/docs/ (Service Catalog)"
+    },
+    {
+      "term": "Catalog Task",
+      "description": "A task associated with fulfilling a requested item.",
+      "aliases": [
+        "SCTASK"
+      ],
+      "source": "https://www.servicenow.com/docs/ (Service Catalog)"
+    },
+    {
+      "term": "Assignment Group",
+      "description": "A group responsible for handling assigned work.",
+      "source": "https://www.servicenow.com/docs/"
+    },
+    {
+      "term": "Configuration Item",
+      "description": "A tracked device, system, or service in the CMDB.",
+      "aliases": [
+        "CI"
+      ],
+      "source": "https://www.servicenow.com/docs/ (Configuration Management Database)"
+    },
+    {
+      "term": "CMDB",
+      "description": "Configuration Management Database.",
+      "source": "https://www.servicenow.com/docs/ (Configuration Management Database)",
+      "enforce_case": true
+    },
+    {
+      "term": "SLA",
+      "description": "Service Level Agreement.",
+      "source": "https://www.servicenow.com/docs/ (Service Level Management)",
+      "enforce_case": true
+    },
+    {
+      "term": "Knowledge Base",
+      "description": "A repository containing knowledge articles and information.",
+      "source": "https://www.servicenow.com/docs/ (Knowledge Management)"
+    },
+    {
+      "term": "Knowledge Article",
+      "description": "An article containing information or guidance for users.",
+      "source": "https://www.servicenow.com/docs/ (Knowledge Management)"
+    },
+    {
+      "term": "Service Portal",
+      "description": "A user-facing interface for accessing ServiceNow services.",
+      "source": "https://www.servicenow.com/docs/ (Service Portal)",
+      "enforce_case": true
+    },
+    {
+      "term": "Service Operations Workspace",
+      "description": "A workspace where agents manage and resolve service-related work.",
+      "source": "https://www.servicenow.com/docs/ (IT Service Management > Service Operations Workspace)",
+      "enforce_case": true
+    },
+    {
+      "term": "Flow Designer",
+      "description": "A tool for automating processes such as approvals, tasks, and notifications.",
+      "source": "https://www.servicenow.com/docs/ (Workflow Studio / Flow Designer)",
+      "enforce_case": true
+    },
+    {
+      "term": "Business Rule",
+      "description": "Server-side logic associated with record operations.",
+      "source": "https://www.servicenow.com/docs/ (Business rules)"
+    },
+    {
+      "term": "Client Script",
+      "description": "Client-side JavaScript used to control interface behavior.",
+      "source": "https://www.servicenow.com/docs/ (Client scripts)"
+    }
+  ],
+  "product_areas": [
+    {
+      "term": "ITOM",
+      "description": "IT Operations Management.",
+      "source": "https://www.servicenow.com/",
+      "enforce_case": true
+    },
+    {
+      "term": "CSM",
+      "description": "Customer Service Management.",
+      "source": "https://www.servicenow.com/",
+      "enforce_case": true
+    },
+    {
+      "term": "HRSD",
+      "description": "HR Service Delivery.",
+      "source": "https://www.servicenow.com/",
+      "enforce_case": true
+    }
+  ],
+  "interface_labels": {
+    "_notes": "Common form fields, modules, and buttons. Labels may be customized per instance, so unfamiliar labels should be flagged for manual review rather than treated as errors. Do not translate these labels unless an official translation is verified or the document clearly uses a translated interface.",
+    "labels": [
+      "Incident",
+      "Problem",
+      "Change",
+      "Request",
+      "Requested Item",
+      "Catalog Task",
+      "Caller",
+      "Assignment Group",
+      "Assigned To",
+      "Priority",
+      "State",
+      "Short Description",
+      "Description",
+      "Configuration Item",
+      "Knowledge",
+      "Approval",
+      "Submit",
+      "Save",
+      "Update",
+      "Resolve"
+    ],
+    "source": "https://www.servicenow.com/docs/ (IT Service Management)"
+  }
+}
